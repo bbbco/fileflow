@@ -1,0 +1,6 @@
+[Details]
+Icon = "resources/fileflow_logo.png"
+Name = "FileFlow"
+ID = "com.github.bbbco.fileflow"
+Version = "1.0.0"
+Build = 1
