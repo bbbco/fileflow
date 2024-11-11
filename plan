@@ -1,0 +1,5 @@
+Use ChatGPT to bootstrap project
+Use Fyne for gui
+Use https://github.com/ustymhentosh/SeaSorter/blob/main/main/main.go for inspiration on configuring and moving files in Golang
+Use https://github.com/able8/work-break-timer/blob/main/main.go#L70 for inspiration on how to keep app in system tray and run continuously
+Use https://github.com/fsnotify/fsnotify/blob/main/cmd/fsnotify/main.go for how to monitor files

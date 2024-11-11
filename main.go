@@ -3,6 +3,7 @@ package main
 import (
 	// Standard imports
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 
@@ -17,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"github.com/emersion/go-autostart"
 )
 
 type Flow struct {
@@ -124,6 +126,21 @@ func main() {
 
 	// Settings Tab
 	startupToggle := widget.NewCheck("Start FileFlow on system startup", func(checked bool) {
+		executable, _ := os.Executable()
+		app := &autostart.App{
+			Name:        "FileFlow",
+			DisplayName: "FileFlow",
+			Exec:        []string{executable},
+		}
+		if checked {
+			if err := app.Enable(); err != nil {
+				log.Fatal(err)
+			}
+		} else {
+			if err := app.Disable(); err != nil {
+				log.Fatal(err)
+			}
+		}
 		// Logic to set startup preference
 	})
 	settingsContent := container.NewVBox(startupToggle)
