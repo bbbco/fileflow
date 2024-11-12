@@ -2,101 +2,64 @@ package main
 
 import (
 	// Standard imports
+
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"regexp"
+	"time"
 
 	// Local imports
+	"fileflow/appstate"
 	"fileflow/src/logutils"
+	"fileflow/ui"
 
 	// Third party imports
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/emersion/go-autostart"
 )
 
-type Flow struct {
-	Pattern     string
-	Destination string
-}
-
-type Directory struct {
-	Path  string
-	Flows []Flow
-}
-
-type AppState struct {
-	Directories []Directory
-}
+const (
+	appName = "FileFlow"
+)
 
 var logWriter *logutils.LogWriter
 
 func main() {
 
-	a := app.New()
+	thisApp := app.New()
+	appPreferences := thisApp.Preferences()
 
-	a.Settings().SetTheme(theme.DarkTheme())
-	w := a.NewWindow("FileFlow Settings")
-	w.Resize(fyne.NewSize(600, 400))
+	thisApp.Settings().SetTheme(theme.DarkTheme())
+	thisWindow := thisApp.NewWindow(fmt.Sprintf("%s Settings", appName))
+	thisWindow.Resize(fyne.NewSize(600, 400))
 
-	if a, ok := a.(desktop.App); ok {
-		fyneDesktopMenu := fyne.NewMenu("FileFlow",
+	if a, ok := thisApp.(desktop.App); ok {
+		fyneDesktopMenu := fyne.NewMenu(appName,
 			fyne.NewMenuItem("Settings", func() {
-				w.Show()
+				thisWindow.Show()
 			}))
 		a.SetSystemTrayMenu(fyneDesktopMenu)
 	}
-	// Introduction tab
-	introLabel := widget.NewLabel("Welcome to FileFlow!\nAutomate file movement based on patterns.")
-	introContent := container.NewVBox(introLabel)
 
-	state := AppState{}
-
-	// Directory tab components
-	dirList := widget.NewList(
-		func() int { return len(state.Directories) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(i int, o fyne.CanvasObject) {
-			o.(*widget.Label).SetText(state.Directories[i].Path)
-		})
-
-	// Empty state handling for directories
-	emptyDirLabel := widget.NewLabel("No directories added yet.")
-	dirListWrapper := container.NewVBox(emptyDirLabel)
-
-	dirAddButton := widget.NewButton("Add Directory", func() {
-		selectDirectory(w, &state)
-	})
-
-	dirRemoveButton := widget.NewButton("Remove Directory", func() {
-		if len(state.Directories) > 0 {
-			selectedDir := state.Directories[0] // Get the selected directory
-			if len(selectedDir.Flows) > 0 {
-				w.ShowAndRun() // Show confirmation dialog for flows removal
-			} else {
-				removeDirectory(&state, selectedDir)
-			}
-		}
-	})
-
-	// Check if there are directories and adjust UI
-	if len(state.Directories) > 0 {
-		dirListWrapper = container.NewVBox(dirAddButton, dirList, dirRemoveButton)
-	} else {
-		dirListWrapper = container.NewVBox(dirAddButton, emptyDirLabel)
+	logWriter, err := logutils.NewLogWriter(appName)
+	if err != nil {
+		logWriter.Fatal("Error with setting up logging interface!", err)
 	}
+	state := &appstate.AppState{}
 
 	// Flows tab components
 
 	flowAddButton := widget.NewButton("Add Flow", func() {
 		if len(state.Directories) > 0 {
-			showAddFlowDialog(w, &state, &state.Directories[0]) // Assume the first directory is selected
+			showAddFlowDialog(thisWindow, state, &state.Directories[0]) // Assume the first directory is selected
 		}
 	})
 
@@ -118,12 +81,6 @@ func main() {
 		flowsListWrapper = container.NewVBox(flowAddButton, emptyFlowLabel)
 	}
 
-	// Log Viewer Tab
-	logContent := widget.NewMultiLineEntry()
-	logContent.SetText("Execution Log...\n") // Replace with actual logs
-	logContent.Disable()
-	logWriter = logutils.NewLogWriter(logContent)
-
 	// Settings Tab
 	startupToggle := widget.NewCheck("Start FileFlow on system startup", func(checked bool) {
 		executable, _ := os.Executable()
@@ -133,62 +90,116 @@ func main() {
 			Exec:        []string{executable},
 		}
 		if checked {
+			thisApp.Preferences().SetBool("startup", true)
 			if err := app.Enable(); err != nil {
 				log.Fatal(err)
 			}
+			logWriter.Write("Enabled FileFlow on system startup")
 		} else {
+			thisApp.Preferences().SetBool("startup", false)
 			if err := app.Disable(); err != nil {
+
 				log.Fatal(err)
 			}
+			logWriter.Write("Disabled FileFlow on system startup")
 		}
 		// Logic to set startup preference
 	})
-	settingsContent := container.NewVBox(startupToggle)
+	startupToggle.SetChecked(thisApp.Preferences().Bool("startup"))
+	quitButton := widget.NewButton("Quit", func() {
+		logWriter.Write("Quitting from Settings menu")
+		thisApp.Quit()
+	})
+	settingsContent := container.NewVBox(startupToggle, layout.NewSpacer(), quitButton)
+
+	directoriesTab := ui.NewDirectoriesTab(appPreferences, &appstate.AppState{}, thisWindow, logWriter)
 
 	// Tabs
 	tabs := container.NewAppTabs(
-		container.NewTabItem("Introduction", introContent),
-		container.NewTabItem("Directories", dirListWrapper),
+		container.NewTabItem("Introduction", createIntroductionTab()),
+		container.NewTabItem("Directories", directoriesTab.GetContent()),
 		container.NewTabItem("Flows", flowsListWrapper),
-		container.NewTabItem("Logs", logContent),
+		container.NewTabItem("Logs", createLogViewerTab(logWriter.LogFilePath)),
 		container.NewTabItem("Settings", settingsContent),
 	)
+	tabs.OnSelected = func(ti *container.TabItem) {
+		logWriter.Write(fmt.Sprintf("Tab %s selected", ti.Text))
+		if ti.Text == "Logs" {
+			scrollContent := ti.Content.(*container.Scroll)
+			scrollContent.ScrollToBottom()
+		}
+	}
 
-	w.SetContent(tabs)
+	thisWindow.SetContent(tabs)
 
-	w.SetCloseIntercept(func() {
-		w.Hide()
+	thisWindow.SetCloseIntercept(func() {
+		thisWindow.Hide()
 	})
-	w.ShowAndRun()
+	thisWindow.ShowAndRun()
 
 }
 
-func showAddDirectoryDialog(win fyne.Window, state *AppState) {
-	dirDialog := widget.NewEntry()
-	dirDialog.SetPlaceHolder("Enter directory path...")
-	saveButton := widget.NewButton("Save", func() {
-		dirPath := dirDialog.Text
-		if dirPath == "" || !isValidDirectory(dirPath) {
+func createLogViewerTab(logFilePath string) *container.Scroll {
+
+	logContent := widget.NewLabel("")
+	logContent.Wrapping = fyne.TextWrapWord
+	logContent.TextStyle = fyne.TextStyle{Monospace: true}
+	scrollContainer := container.NewVScroll(logContent)
+
+	scrollContainer.ScrollToBottom()
+
+	refreshLogContent := func() {
+		data, err := ioutil.ReadFile(logFilePath)
+		if err != nil {
+			logContent.SetText(fmt.Sprintf("Error reading log file %s: %v", logFilePath, err))
 			return
 		}
-		state.Directories = append(state.Directories, Directory{Path: dirPath})
-	})
-	win.SetContent(container.NewVBox(dirDialog, saveButton))
+		logContent.SetText(string(data))
+
+	}
+	go func() {
+		for range time.Tick(2 * time.Second) {
+			refreshLogContent()
+		}
+	}()
+
+	return scrollContainer
 }
 
-// Function to open the file dialog for directory selection
-func selectDirectory(win fyne.Window, state *AppState) {
-	dirDialog := dialog.NewFolderOpen(func(folder fyne.ListableURI, err error) {
-		if err != nil || folder == nil {
-			fmt.Println("No directory selected.")
-			return
-		}
-		// Here, the file URI will point to the directory selected
-		logWriter.Write(fmt.Sprint("Directory selected:", folder.String()))
-		state.Directories = append(state.Directories, Directory{Path: folder.Path()})
-	}, win)
+func createIntroductionTab() *fyne.Container {
+	// Instruction text
+	instructions := `Welcome to FileFlow!
 
-	dirDialog.Show()
+FileFlow allows you to monitor specific directories for files that match user-defined patterns, called "Flows". 
+Each Flow represents a rule, with a regular expression (regex) to identify files and a target directory 
+to move those files into.
+
+How to Use:
+1. Adding Directories:
+   - Use the "Add Directory" button to add directories for monitoring.
+   - Directories must exist and will be validated before being added.
+
+2. Defining Flows:
+   - For each directory, define one or more Flows by specifying a regular expression (regex) and a target directory.
+   - Regex patterns help identify which files to move based on their names.
+   - Each Flow must have a valid regex pattern and a destination directory.
+
+3. Managing Entries:
+   - Edit or remove any Flow or directory as needed. 
+   - A directory cannot be removed if it still contains active Flows.
+   - Confirm all removals to prevent accidental deletions.
+
+4. Viewing Logs:
+   - Use the "Log Viewer" tab to see real-time log entries. This will show all actions taken by the application.
+
+Start by adding a directory and defining your first Flow. Enjoy automating your file organization with FileFlow!
+`
+
+	// Create the label widget with instructions
+	introLabel := widget.NewLabel(instructions)
+
+	// Return the container to be used as the introduction tab
+	return container.NewVBox(introLabel)
 }
 
 func isValidDirectory(path string) bool {
@@ -196,7 +207,7 @@ func isValidDirectory(path string) bool {
 	return !os.IsNotExist(err)
 }
 
-func showAddFlowDialog(win fyne.Window, state *AppState, dir *Directory) {
+func showAddFlowDialog(win fyne.Window, state *appstate.AppState, dir *appstate.FlowDirectory) {
 	flowPatternEntry := widget.NewEntry()
 	flowPatternEntry.SetPlaceHolder("Enter regex pattern...")
 	saveButton := widget.NewButton("Save", func() {
@@ -204,7 +215,7 @@ func showAddFlowDialog(win fyne.Window, state *AppState, dir *Directory) {
 		if pattern == "" || !isValidRegex(pattern) {
 			return
 		}
-		dir.Flows = append(dir.Flows, Flow{Pattern: pattern, Destination: dir.Path})
+		//dir.Flows = append(dir.Flows, appstate.Flow{Pattern: pattern, Destination: dir})
 	})
 	win.SetContent(container.NewVBox(flowPatternEntry, saveButton))
 }
@@ -212,15 +223,4 @@ func showAddFlowDialog(win fyne.Window, state *AppState, dir *Directory) {
 func isValidRegex(pattern string) bool {
 	_, err := regexp.Compile(pattern)
 	return err == nil
-}
-
-func removeDirectory(state *AppState, dir Directory) {
-	var indexToRemove int
-	for i, d := range state.Directories {
-		if d.Path == dir.Path {
-			indexToRemove = i
-			break
-		}
-	}
-	state.Directories = append(state.Directories[:indexToRemove], state.Directories[indexToRemove+1:]...)
 }
